@@ -1,0 +1,16 @@
+version: '3.8'
+
+services:
+  gsp_presentationmaker:
+    container_name: gsp_presentationmaker
+    build: .
+    ports:
+      - "8111:8111"
+    volumes:
+      - /volume1/docker/gsp_presentationmaker/credentials:/app/credentials
+      - /volume1/docker/gsp_presentationmaker/temp:/app/temp
+    restart: unless-stopped
+    environment:
+      - TZ=America/Chicago
+    mem_limit: 512m
+    cpu_shares: 512

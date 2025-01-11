@@ -1,0 +1,8 @@
+Flask==2.3.2
+google-api-python-client==2.104.0
+google-auth==2.23.3
+google-auth-oauthlib==1.0.0
+google-auth-httplib2==0.1.0
+gunicorn==21.2.0
+pytz==2023.3
+python-pptx==0.6.21
