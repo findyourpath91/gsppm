@@ -3,6 +3,7 @@ import json
 import pytz
 from datetime import datetime
 from flask import Flask, request, jsonify
+from werkzeug.exceptions import BadRequest
 from google.auth.transport.requests import Request
 from googleapiclient.discovery import build
 from googleapiclient.errors import HttpError
@@ -30,8 +31,10 @@ def authenticate_drive():
 def get_folder_id_from_request(request_data):
     """Extract and validate folder ID."""
     folder_id = request_data.get('folderId')
-    if not folder_id or not isinstance(folder_id, str):
+    if not folder_id:
         raise ValueError("Invalid or missing 'folderId' in request data.")
+    if not isinstance(folder_id, str):
+        raise TypeError("Invalid 'folderId': must be a string.")
     return folder_id
 
 def get_template_path_from_folder(drive_service, folder_id):
@@ -129,7 +132,23 @@ def update_presentation(questions_answers, pptx_file, output_pptx):
 def process_request():
     """Handle incoming POST requests with PowerPoint data."""
     try:
-        request_data = request.get_json()
+        try:
+            request_data = request.get_json()
+        except BadRequest as e:
+            return jsonify({"error": "Malformed JSON payload"}), 400
+        except TypeError as e:
+            return jsonify({"error": str(e)}), 400
+        except HttpError as e:
+            status_code = e.resp.status if hasattr(e, 'resp') and hasattr(e.resp, 'status') else 500
+            try:
+                error_details = json.loads(e.content.decode()).get("error", {}).get("message", "No details provided")
+            except (json.JSONDecodeError, AttributeError):
+                error_details = "Could not parse error details from Google API response."
+            return jsonify({
+                "error": f"Google API Error: Status {status_code}",
+                "details": error_details
+            }), status_code
+        
         if not request_data:
             return jsonify({"error": "Invalid or missing JSON payload"}), 400
 
