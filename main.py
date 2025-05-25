@@ -1,6 +1,7 @@
 import os
 import json
 import pytz
+import traceback
 from datetime import datetime
 from flask import Flask, request, jsonify
 from google.auth.transport.requests import Request
@@ -52,7 +53,11 @@ def set_public_permissions(drive_service, file_id):
         ).execute()
         print(f"File {file_id} is now publicly accessible.")
     except HttpError as e:
+        # Specific HttpError for set_public_permissions is handled within the function
+        # The task asks to add this handling in process_request, so we'll do it there too.
+        # For now, this internal print will remain.
         print(f"An error occurred while setting permissions: {e}")
+        raise # Re-raise to be caught by process_request or the main handler
 
 def upload_file_to_drive(drive_service, file_path, folder_id):
     """Upload a file to Google Drive."""
@@ -65,7 +70,9 @@ def upload_file_to_drive(drive_service, file_path, folder_id):
         uploaded_file = drive_service.files().create(body=file_metadata, media_body=media, fields='id').execute()
         return uploaded_file['id']
     except Exception as e:
+        # This will be caught by the specific HttpError or generic Exception in process_request
         raise RuntimeError(f"Failed to upload file: {e}")
+
 
 def create_folder_in_drive(drive_service, folder_name, parent_folder_id=None):
     """Create a folder in Google Drive, ensuring no duplication."""
@@ -125,11 +132,17 @@ def update_presentation(questions_answers, pptx_file, output_pptx):
                     qa_index += 1
     prs.save(output_pptx)
 
+@app.route('/', methods=['GET'])
+def health_check():
+    """Provide a basic health check and welcome message."""
+    return jsonify({"status": "Application is running", "message": "Welcome to the PPTX processing API"}), 200
+
 @app.route('/process', methods=['POST'])
 def process_request():
     """Handle incoming POST requests with PowerPoint data."""
     try:
         request_data = request.get_json()
+        print(f"Received JSON payload: {request_data}")
         if not request_data:
             return jsonify({"error": "Invalid or missing JSON payload"}), 400
 
@@ -146,27 +159,79 @@ def process_request():
         output_pptx_1 = os.path.join(temp_dir, f'Round 1_{timestamp}.pptm')
         output_pptx_2 = os.path.join(temp_dir, f'Round 2_{timestamp}.pptm')
 
-        drive_service = authenticate_drive()
-        games_folder_id = create_folder_in_drive(drive_service, "Create Games", parent_folder_id=folder_id)
-        template_file_id = get_template_path_from_folder(drive_service, folder_id)
+        try:
+            drive_service = authenticate_drive()
+        except Exception as e:
+            print(f"Error during Google Drive authentication: {e}")
+            raise
+
+        games_folder_id = create_folder_in_drive(drive_service, "Create Games", parent_folder_id=folder_id) # Assuming this can also raise, covered by main try-except
+        
+        try:
+            template_file_id = get_template_path_from_folder(drive_service, folder_id)
+        except FileNotFoundError as e:
+            print(f"Error finding template file: {e}")
+            raise
+        except HttpError as e:
+            print(f"Google Drive API error while getting template path: {e}")
+            raise
 
         # Download the template file from Drive
         template_local_path = os.path.join(temp_dir, "template.pptm")
-        drive_request = drive_service.files().get_media(fileId=template_file_id)
-        with open(template_local_path, "wb") as f:
-            f.write(drive_request.execute())
+        try:
+            drive_request = drive_service.files().get_media(fileId=template_file_id)
+            with open(template_local_path, "wb") as f:
+                f.write(drive_request.execute())
+        except HttpError as e:
+            print(f"Error downloading template file {template_file_id} from Drive: {e}")
+            raise
 
         # Update presentations with the first and second sets of questions
-        update_presentation(questions_answers[:25], template_local_path, output_pptx_1)
-        update_presentation(questions_answers[25:], template_local_path, output_pptx_2)
+        try:
+            update_presentation(questions_answers[:25], template_local_path, output_pptx_1)
+        except Exception as e:
+            print(f"Error updating presentation {output_pptx_1}: {e}")
+            raise
+        try:
+            update_presentation(questions_answers[25:], template_local_path, output_pptx_2)
+        except Exception as e:
+            print(f"Error updating presentation {output_pptx_2}: {e}")
+            raise
 
         # Upload the updated presentations to Google Drive
-        file_id_1 = upload_file_to_drive(drive_service, output_pptx_1, games_folder_id)
-        file_id_2 = upload_file_to_drive(drive_service, output_pptx_2, games_folder_id)
+        file_id_1 = None # Initialize in case of early error
+        file_id_2 = None # Initialize in case of early error
+        try:
+            file_id_1 = upload_file_to_drive(drive_service, output_pptx_1, games_folder_id)
+        except HttpError as e:
+            print(f"Google Drive API error while uploading file {output_pptx_1}: {e}")
+            raise
+        except Exception as e:
+            print(f"Error uploading file {output_pptx_1} to Drive: {e}")
+            raise
+        
+        try:
+            file_id_2 = upload_file_to_drive(drive_service, output_pptx_2, games_folder_id)
+        except HttpError as e:
+            print(f"Google Drive API error while uploading file {output_pptx_2}: {e}")
+            raise
+        except Exception as e:
+            print(f"Error uploading file {output_pptx_2} to Drive: {e}")
+            raise
 
         # Set public permissions for the uploaded files
-        set_public_permissions(drive_service, file_id_1)
-        set_public_permissions(drive_service, file_id_2)
+        if file_id_1:
+            try:
+                set_public_permissions(drive_service, file_id_1)
+            except HttpError as e:
+                print(f"Google Drive API error while setting permissions for file {file_id_1}: {e}")
+                raise
+        if file_id_2:
+            try:
+                set_public_permissions(drive_service, file_id_2)
+            except HttpError as e:
+                print(f"Google Drive API error while setting permissions for file {file_id_2}: {e}")
+                raise
 
         return jsonify({
             "success": True,
@@ -177,6 +242,7 @@ def process_request():
         }), 200
 
     except Exception as e:
+        traceback.print_exc() # This was added in the previous step
         return jsonify({"error": str(e)}), 500
 
 if __name__ == '__main__':
